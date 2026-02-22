@@ -1,6 +1,8 @@
 """
 CSCI 544 - Homework Assignment 1
 Sentiment Analysis using Amazon Reviews
+Name : Sohail Haresh Gidwani
+USC ID : 7321203258
 
 Python Version: 3.x
 """
