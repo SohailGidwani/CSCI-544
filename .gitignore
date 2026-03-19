@@ -1,2 +1,19 @@
 *.tsv
 .DS_Store
+CLAUDE.md
+*.zip
+
+# HW3 - large/generated files
+HW3/*.pt
+HW3/*.out
+HW3/pred
+HW3/tmp.out
+HW3/dev_cnn.out
+HW3/glove.6B.100d
+HW3/glove.6B.100d.gz
+HW3/data/
+HW3/eval/
+HW3/conll03eval
+HW3/sentiment_classifier.py
+__pycache__/
+.ipynb_checkpoints/

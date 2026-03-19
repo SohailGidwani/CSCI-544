@@ -1,0 +1,283 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{enumitem}
+
+\title{\textbf{CSCI 544: Homework Assignment 3}\\[0.5em]
+\large Named Entity Recognition with Bidirectional LSTMs}
+\author{
+\textbf{Name:} Sohail Haresh Gidwani \\
+\textbf{USC ID:} 7321203258
+}
+\date{}
+
+\begin{document}
+\maketitle
+\hrule
+\vspace{1.5em}
+
+\section{Overview}
+
+I built three NER taggers for the CoNLL-2003 corpus using PyTorch. Task 1 is a vanilla BiLSTM, Task 2 adds GloVe embeddings with a case sensitivity strategy, and the Bonus extends Task 2 with a character-level CNN. Training data has 14,987 sentences, 23,626 unique tokens, and 9 BIO tags. I trained everything on an Apple M2 GPU via MPS with random state 42 for reproducibility.
+
+\section{Task 1: Simple Bidirectional LSTM (40 points)}
+
+\subsection{Architecture and Data Processing}
+
+The vocabulary comes from training data only. Each word maps to an integer ID, with \texttt{<pad>} (index 0) and \texttt{<unk>} (index 1) for padding and unknown words. The model architecture follows the assignment spec:
+
+\begin{center}
+\texttt{Embedding $\rightarrow$ BiLSTM $\rightarrow$ Linear $\rightarrow$ ELU $\rightarrow$ Classifier}
+\end{center}
+
+Embeddings are initialized uniformly over $[-0.05, 0.05]$, with the padding vector fixed at zero. The BiLSTM concatenates forward and backward hidden states into a 512-d representation per token, which passes through a linear layer (512 $\rightarrow$ 128), ELU activation, and the final 9-way classifier. I use \texttt{pack\_padded\_sequence} for efficient batching so the LSTM doesn't waste computation on padding. Padded labels are set to $-1$ and ignored by CrossEntropyLoss.
+
+\subsection{Hyperparameters}
+
+Table~\ref{tab:hp1} lists every hyperparameter. The top section is fixed by the assignment; the bottom is what I tuned.
+
+\begin{table}[h]
+\centering
+\caption{Task 1: All Hyperparameters}
+\label{tab:hp1}
+\begin{tabular}{lc}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Embedding dimension & 100 \\
+Number of LSTM layers & 1 \\
+LSTM hidden dimension & 256 \\
+LSTM dropout & 0.33 \\
+Linear output dimension & 128 \\
+Activation function & ELU \\
+\midrule
+Optimizer & SGD \\
+Learning rate & 0.15 \\
+Momentum & 0.9 \\
+Batch size & 32 \\
+Number of epochs & 30 \\
+LR scheduler & StepLR (step=7, $\gamma$=0.5) \\
+Gradient clipping max norm & 5.0 \\
+Embedding init & Uniform($-0.05$, $0.05$) \\
+Model selection criterion & Lowest dev loss \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+I went with lr=0.15 because SGD with momentum can handle it, and convergence is faster in early epochs. The StepLR scheduler halves the rate every 7 epochs, giving about 4 decay cycles over 30 epochs total. Best checkpoint landed at epoch 9 with dev loss 0.1985.
+
+\subsection{Results}
+
+\textbf{What are the precision, recall, and F1 score on the dev data?}
+
+\begin{table}[h]
+\centering
+\caption{Task 1: Dev Set Results (conll03eval)}
+\label{tab:res1}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Entity Type} & \textbf{Precision (\%)} & \textbf{Recall (\%)} & \textbf{F1 (\%)} \\
+\midrule
+LOC & 92.29 & 82.09 & 86.89 \\
+MISC & 85.04 & 75.81 & 80.16 \\
+ORG & 74.77 & 71.59 & 73.14 \\
+PER & 75.50 & 74.10 & 74.79 \\
+\midrule
+\textbf{Overall} & \textbf{81.69} & \textbf{76.27} & \textbf{78.89} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Token accuracy is 95.98\%. Entity-level F1: \textbf{78.89\%}. LOC scored highest at 86.89, which makes sense because location names (countries, cities) show up often and have pretty consistent context. PER and ORG are tougher without pretrained embeddings. The model has to figure out that ``Blackburn'' or ``Bundesbank'' are names using only random 100-d vectors and the training data. That's a tall order. ORG was lowest (73.14) since organization names are all over the place: abbreviations like ``EU'', multi-word names like ``European Commission'', or words that could easily pass as common nouns.
+
+After epoch 9, training loss kept dropping but dev loss plateaued. Textbook overfitting.
+
+\section{Task 2: BiLSTM with GloVe and Case Features (60 points)}
+
+\subsection{GloVe Integration}
+
+I initialize the embedding layer with GloVe 6B 100d vectors (400,000 words) instead of random values. For each word in my vocabulary, I try the lowercase form in GloVe first. If that misses, I check the original casing. Words without any match keep random initialization.
+
+\subsection{Case Sensitivity Strategy}
+
+GloVe is case-insensitive: ``apple'' and ``Apple'' get the exact same vector. But capitalization is one of the strongest NER cues we've got. A capitalized word mid-sentence? Almost always an entity. So how do you preserve that signal when the embeddings throw it away? What if you could separate meaning from orthography entirely?
+
+That's exactly what I did. I created a separate categorical feature for each word based on its surface form. Five categories (plus padding at index 0):
+
+\begin{enumerate}[nosep]
+\item \textbf{lowercase}: ``the'', ``running'', ``city''
+\item \textbf{UPPERCASE}: ``USA'', ``NATO'', ``BBC''
+\item \textbf{Titlecase}: ``London'', ``John'', ``Microsoft''
+\item \textbf{has\_digit}: ``3rd'', ``H1N1'', ``1990s''
+\item \textbf{other}: ``eBay'', ``pH'', ``MacDonald''
+\end{enumerate}
+
+Each category maps through a learned 10-dimensional embedding. I concatenate this with the 100-d GloVe vector, giving the BiLSTM a 110-d input per token. The word embedding captures semantics; the case embedding captures orthography. ``apple'' and ``Apple'' share the same GloVe vector but get different case features (lowercase vs.\ Titlecase), so the model can still tell them apart.
+
+Why not use cased embeddings instead? GloVe doesn't offer them at this scale. And even if it did, you'd lose the shared semantics between ``apple'' and ``Apple''. My approach keeps that link while adding an explicit orthographic signal. I'm not 100\% sure this is the best possible strategy, but it works well in practice and the results back it up.
+
+\subsection{Vocabulary Expansion}
+
+Early on, I noticed that building vocab from only training data hurts: any new word at test time maps to \texttt{<unk>}, even if GloVe has a perfectly good vector for it. So before training, I scan dev and test sentences and add any word whose lowercase form exists in GloVe. This expanded the vocabulary by 5,331 words (23,626 $\rightarrow$ 28,957) and improved GloVe coverage from 88.9\% to 91.0\%. Worth doing.
+
+\subsection{Differential Learning Rate}
+
+The GloVe embeddings already carry distributional knowledge, so I don't want to overwrite them with large gradient updates. I use lr=0.001 for the word embedding layer and lr=0.1 for everything else (case embeddings, LSTM, linear layers).
+
+I tried a single learning rate first. Didn't work. At 0.1, the GloVe vectors drifted too far from their pretrained values and lost useful information. At 0.001, the LSTM and linear layers barely learned anything after 50 epochs. Should've split them from the start, honestly.
+
+\subsection{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\caption{Task 2: All Hyperparameters}
+\label{tab:hp2}
+\begin{tabular}{lc}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Word embedding dimension & 100 (GloVe 6B) \\
+Number of case categories & 6 (incl.\ pad) \\
+Case embedding dimension & 10 \\
+LSTM input dimension & 110 \\
+Number of LSTM layers & 1 \\
+LSTM hidden dimension & 256 \\
+LSTM dropout & 0.33 \\
+Linear output dimension & 128 \\
+Activation function & ELU \\
+Total parameters & 3,716,249 \\
+\midrule
+Optimizer & SGD \\
+Word embedding learning rate & 0.001 \\
+Other parameters learning rate & 0.1 \\
+Momentum & 0.9 \\
+Batch size & 32 \\
+Number of epochs & 50 \\
+LR scheduler & StepLR (step=10, $\gamma$=0.5) \\
+Gradient clipping max norm & 5.0 \\
+Model selection criterion & Lowest dev loss \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Best checkpoint landed at epoch 48 (dev loss 0.0420). The model kept improving slowly through the full 50 epochs, which I think is because the low embedding LR means the GloVe vectors need extra time to fine-tune.
+
+\subsection{Results}
+
+\textbf{What are the precision, recall, and F1 score on the dev data?}
+
+\begin{table}[h]
+\centering
+\caption{Task 2: Dev Set Results (conll03eval)}
+\label{tab:res2}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Entity Type} & \textbf{Precision (\%)} & \textbf{Recall (\%)} & \textbf{F1 (\%)} \\
+\midrule
+LOC & 94.62 & 95.75 & 95.18 \\
+MISC & 85.59 & 86.98 & 86.28 \\
+ORG & 87.93 & 89.11 & 88.52 \\
+PER & 95.21 & 97.01 & 96.10 \\
+\midrule
+\textbf{Overall} & \textbf{91.89} & \textbf{93.29} & \textbf{92.58} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Token accuracy: 98.76\%. Entity-level F1: \textbf{92.58\%}. That's roughly 14 points above Task 1. So what caused this jump? Every single entity type improved:
+
+\begin{itemize}[nosep]
+\item PER: 74.79 $\rightarrow$ 96.10 (+21.3). Huge. GloVe knows names, and Titlecase features flag them right away.
+\item ORG: 73.14 $\rightarrow$ 88.52 (+15.4). Pretrained vectors give the model context that random embeddings can't.
+\item LOC: 86.89 $\rightarrow$ 95.18 (+8.3). Already the strongest in Task 1; GloVe pushed it higher.
+\item MISC: 80.16 $\rightarrow$ 86.28 (+6.1). Smallest gain. MISC covers nationalities, events and products with less consistent patterns.
+\end{itemize}
+
+The combination of GloVe vectors, case features, vocab expansion and differential learning rates all contributed. Hard to say which mattered most individually, but I'd guess the pretrained embeddings did the heavy lifting.
+
+\section{Bonus: LSTM-CNN Model (10 + 10 points)}
+
+\subsection{Character-level CNN}
+
+On top of the Task 2 architecture, I added a CNN that operates on character sequences. The goal: capture sub-word patterns like suffixes (``-tion'', ``-land'', ``-son'') and prefixes (``anti-'', ``pre-'') that word-level embeddings can't see.
+
+Each character in a word maps to a 30-d embedding (as required). A Conv1d layer with 50 filters and kernel size 3 slides over the character sequence, followed by max-pooling over the word length. The result is a fixed 50-d character vector per word. I concatenate this with the word embedding (100d) and case embedding (10d), so the BiLSTM gets 160-d input.
+
+The character CNN is most useful for rare or unseen words. Even if a word has no GloVe vector, the CNN can pick up morphological cues from its character sequence.
+
+\subsection{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\caption{Bonus: Additional CNN Hyperparameters}
+\label{tab:hp3}
+\begin{tabular}{lc}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Character vocabulary size & 86 \\
+Character embedding dimension & 30 \\
+Number of CNN layers & 1 \\
+CNN output channels (filters) & 50 \\
+CNN kernel size & 3 \\
+CNN padding & 1 \\
+Pooling strategy & Max-pool over word length \\
+LSTM input dimension & 160 \\
+\midrule
+\multicolumn{2}{l}{\textit{All other hyperparameters identical to Task 2}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Best checkpoint: epoch 28, well ahead of Task 2's epoch 48. I suspect the character features provide enough extra signal that the model converges faster.
+
+\subsection{Results}
+
+\textbf{What are the precision, recall, and F1 score on the dev data?}
+
+\begin{table}[h]
+\centering
+\caption{Bonus: Dev Set Results (conll03eval)}
+\label{tab:res3}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Entity Type} & \textbf{Precision (\%)} & \textbf{Recall (\%)} & \textbf{F1 (\%)} \\
+\midrule
+LOC & 94.39 & 95.32 & 94.85 \\
+MISC & 86.24 & 86.33 & 86.29 \\
+ORG & 86.42 & 89.71 & 88.04 \\
+PER & 95.29 & 96.58 & 95.93 \\
+\midrule
+\textbf{Overall} & \textbf{91.59} & \textbf{93.05} & \textbf{92.31} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+F1 on the dev set: \textbf{92.31\%}. So why didn't the CNN beat Task 2 here? On the dev set, GloVe + case features already cover most of the signal for known words, so the extra CNN parameters don't add much. Where the character CNN should help more is on the test set with unseen words, since it can pick up sub-word cues that word-level models miss entirely.
+
+MISC edged up to 86.29 (from 86.28). ORG recall improved to 89.71\% (from 89.11\%), which tracks with the idea that organization names have distinctive character patterns.
+
+\section{Summary}
+
+\begin{table}[h]
+\centering
+\caption{All Models Compared on Dev Set}
+\label{tab:summary}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Model} & \textbf{Precision (\%)} & \textbf{Recall (\%)} & \textbf{F1 (\%)} \\
+\midrule
+Task 1: Simple BiLSTM & 81.69 & 76.27 & 78.89 \\
+Task 2: BiLSTM + GloVe + Case & 91.89 & 93.29 & 92.58 \\
+Bonus: BiLSTM-CNN & 91.59 & 93.05 & 92.31 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+GloVe embeddings with case features drove the single biggest improvement, boosting F1 by about 14 points over the baseline. Four things contributed: pretrained word vectors carrying semantic information, the case embedding strategy preserving capitalization cues, vocabulary expansion cutting the UNK rate, and differential learning rates letting each component train at its own pace. The character CNN on top of that gave the model sub-word awareness but didn't push dev F1 higher; it should generalize better to test words the model hasn't encountered before.
+
+All output files (\texttt{dev1.out}, \texttt{test1.out}, \texttt{dev2.out}, \texttt{test2.out}, \texttt{pred}) and model checkpoints (\texttt{blstm1.pt}, \texttt{blstm2.pt}) are included. The README has commands for both training and generating predictions.
+
+\end{document}

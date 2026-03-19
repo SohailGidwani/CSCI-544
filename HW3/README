@@ -1,0 +1,56 @@
+HW3 - Named Entity Recognition with BiLSTM
+============================================
+
+Requirements: Python 3.8+, PyTorch, NumPy
+
+Main notebook: HW3-CSCI544.ipynb (run all cells sequentially)
+
+Task 1 - Simple BiLSTM
+-----------------------
+Train:
+    python blstm1.py --mode train --data data
+
+Predict (from saved model):
+    python blstm1.py --mode predict --data data
+
+Outputs: dev1.out, test1.out, blstm1.pt
+
+Hyperparameters: lr=0.15, momentum=0.9, batch_size=32, epochs=30,
+                 StepLR(step=7, gamma=0.5), grad_clip=5.0
+
+Task 2 - BiLSTM with GloVe + Case Features
+-------------------------------------------
+Train:
+    python blstm2.py --mode train --data data --glove glove.6B.100d
+
+Predict (from saved model):
+    python blstm2.py --mode predict --data data
+
+Outputs: dev2.out, test2.out, blstm2.pt
+
+Hyperparameters: emb_lr=0.001, other_lr=0.1, momentum=0.9, batch_size=32,
+                 epochs=50, StepLR(step=10, gamma=0.5), grad_clip=5.0,
+                 case_embedding_dim=10, n_case_categories=6
+
+Case sensitivity strategy:
+    GloVe is case-insensitive so all words are looked up by their
+    lowercase form. To preserve case information, each word gets a
+    categorical case feature (lowercase / UPPERCASE / Titlecase /
+    has_digit / other) mapped through a learned 10-dim embedding.
+    This is concatenated with the 100-dim word embedding before
+    feeding into the BiLSTM (input dim = 110).
+
+Bonus - BiLSTM-CNN
+------------------
+Included in the notebook. Adds a character-level CNN (char_emb=30,
+Conv1d with 50 filters, kernel=3) to the Task 2 model.
+Output: pred
+
+Evaluation
+----------
+Copy conll03eval to the HW3 root directory first:
+    cp eval/conll03eval .
+
+Then run:
+    python eval/eval.py -p dev1.out -g data/dev
+    python eval/eval.py -p dev2.out -g data/dev
