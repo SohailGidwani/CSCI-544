@@ -1,56 +1,133 @@
 HW3 - Named Entity Recognition with BiLSTM
 ============================================
+Name: Sohail Haresh Gidwani
+USC ID: 7321203258
+
 
 Requirements: Python 3.8+, PyTorch, NumPy
 
-Main notebook: HW3-CSCI544.ipynb (run all cells sequentially)
+Submission zip structure
+------------------------
+HW3-SohailGidwani.zip
+|-- blstm1.py                              # Task 1 script
+|-- blstm2.py                              # Task 2 script
+|-- blstm_cnn.py                           # Bonus script
+|-- blstm1.pt                              # Task 1 trained model
+|-- blstm2.pt                              # Task 2 trained model
+|-- dev1.out                               # Task 1 dev predictions
+|-- test1.out                              # Task 1 test predictions
+|-- dev2.out                               # Task 2 dev predictions
+|-- test2.out                              # Task 2 test predictions
+|-- pred                                   # Bonus test predictions
+|-- README                                 # This file
+|-- HW3-CSCI544-SohailGidwani.ipynb        # Jupyter notebook (all tasks)
+|-- HW3-CSCI544-SohailGidwani-writeup.pdf  # Write-up with results
 
-Task 1 - Simple BiLSTM
------------------------
+Note: data/, eval/, and glove.6B.100d are not included in the zip.
+      They should be placed in the same directory as the scripts.
+
+========================================================================
+Task 1 - Simple BiLSTM (40 pts)
+========================================================================
+
+Architecture: Embedding -> BiLSTM -> Linear -> ELU -> Classifier
+
+Network hyperparameters (fixed by assignment):
+    embedding dim = 100
+    LSTM layers = 1, hidden dim = 256, dropout = 0.33
+    linear output dim = 128, activation = ELU
+
+Training hyperparameters (tuned):
+    optimizer = SGD, lr = 0.15, momentum = 0.9
+    batch size = 32, epochs = 30
+    scheduler = StepLR(step_size=7, gamma=0.5)
+    gradient clipping = 5.0
+
 Train:
     python blstm1.py --mode train --data data
 
-Predict (from saved model):
+Predict (loads saved blstm1.pt):
     python blstm1.py --mode predict --data data
 
-Outputs: dev1.out, test1.out, blstm1.pt
+Outputs: blstm1.pt, dev1.out, test1.out
 
-Hyperparameters: lr=0.15, momentum=0.9, batch_size=32, epochs=30,
-                 StepLR(step=7, gamma=0.5), grad_clip=5.0
+Dev results:
+    Precision: 81.69%  Recall: 76.27%  F1: 78.89%
 
-Task 2 - BiLSTM with GloVe + Case Features
--------------------------------------------
+========================================================================
+Task 2 - BiLSTM + GloVe + Case Features (60 pts)
+========================================================================
+
+Architecture: [WordEmb(GloVe) || CaseEmb] -> BiLSTM -> Linear -> ELU -> Classifier
+
+Same network hyperparameters as Task 1, plus:
+    case categories = 6 (pad, lowercase, UPPER, Title, digit, other)
+    case embedding dim = 10
+    LSTM input dim = 110 (100 word + 10 case)
+
+Training hyperparameters (tuned):
+    optimizer = SGD with differential learning rate
+        word embedding lr = 0.001 (small, to preserve GloVe)
+        other params lr = 0.1
+    momentum = 0.9, batch size = 32, epochs = 50
+    scheduler = StepLR(step_size=10, gamma=0.5)
+    gradient clipping = 5.0
+
+Vocab expansion: dev/test words with GloVe coverage are added to vocab
+                  before training (+5331 words, 88.9% -> 91.0% coverage)
+
+Case sensitivity strategy:
+    GloVe is case-insensitive, so "Apple" and "apple" share the same
+    vector. To keep capitalization info, each word gets a categorical
+    case feature (lowercase / UPPERCASE / Titlecase / has_digit / other)
+    mapped through a learned 10-dim embedding. This is concatenated with
+    the 100-dim GloVe word embedding, giving the LSTM a 110-dim input.
+    The word embedding captures meaning, the case embedding captures
+    orthographic pattern, so the model can distinguish "Apple" (entity)
+    from "apple" (common noun).
+
 Train:
     python blstm2.py --mode train --data data --glove glove.6B.100d
 
-Predict (from saved model):
+Predict (loads saved blstm2.pt):
     python blstm2.py --mode predict --data data
 
-Outputs: dev2.out, test2.out, blstm2.pt
+Outputs: blstm2.pt, dev2.out, test2.out
 
-Hyperparameters: emb_lr=0.001, other_lr=0.1, momentum=0.9, batch_size=32,
-                 epochs=50, StepLR(step=10, gamma=0.5), grad_clip=5.0,
-                 case_embedding_dim=10, n_case_categories=6
+Dev results:
+    Precision: 91.89%  Recall: 93.29%  F1: 92.58%
 
-Case sensitivity strategy:
-    GloVe is case-insensitive so all words are looked up by their
-    lowercase form. To preserve case information, each word gets a
-    categorical case feature (lowercase / UPPERCASE / Titlecase /
-    has_digit / other) mapped through a learned 10-dim embedding.
-    This is concatenated with the 100-dim word embedding before
-    feeding into the BiLSTM (input dim = 110).
+========================================================================
+Bonus - BiLSTM-CNN (10 + 10 pts)
+========================================================================
 
-Bonus - BiLSTM-CNN
-------------------
-Included in the notebook. Adds a character-level CNN (char_emb=30,
-Conv1d with 50 filters, kernel=3) to the Task 2 model.
-Output: pred
+Architecture: [WordEmb(GloVe) || CaseEmb || CharCNN] -> BiLSTM -> Linear -> ELU -> Classifier
 
+Builds on Task 2 by adding a character-level CNN:
+    char embedding dim = 30 (required by assignment)
+    Conv1d: 50 filters, kernel size = 3, padding = 1
+    pooling = max-pool over word length
+    LSTM input dim = 160 (100 word + 10 case + 50 char)
+
+All other hyperparameters same as Task 2.
+
+Train:
+    python blstm_cnn.py --mode train --data data --glove glove.6B.100d
+
+Predict (loads saved blstm_cnn.pt):
+    python blstm_cnn.py --mode predict --data data
+
+Outputs: blstm_cnn.pt, dev_cnn.out, pred
+
+Dev results:
+    Precision: 91.59%  Recall: 93.05%  F1: 92.31%
+
+========================================================================
 Evaluation
-----------
-Copy conll03eval to the HW3 root directory first:
-    cp eval/conll03eval .
+========================================================================
 
-Then run:
+To evaluate predictions against gold-standard dev labels:
+
     python eval/eval.py -p dev1.out -g data/dev
     python eval/eval.py -p dev2.out -g data/dev
+    python eval/eval.py -p dev_cnn.out -g data/dev
